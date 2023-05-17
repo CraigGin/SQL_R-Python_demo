@@ -20,15 +20,15 @@ This allows you to call mysql using just `mysql`.
 
 In order to create a database, you first need to log in to the local server with the root account. You can do this in the Terminal by typing
 
-`mysql  -u root -p`
+`mysql -u root -p`
 
-and entering the password you used during installation. The you can create the example database, called gutMB, using the command
+and entering the password you used during installation. Then you can create the example database, called gutMB, using the command
 
 `CREATE DATABASE gutMB;`
 
  If you would like, you can create a new user for the server with the command
 
-`CREATE USER 'username'@'localhost' IDENTIFIED BY 'password';
+`CREATE USER 'username'@'localhost' IDENTIFIED BY 'password'`;
 
 In the R and Python examples included in the repository, I used the username `crgin` and the password `insecure`. To grant permission for the user to use the databases on the server, use the command
 
