@@ -1,0 +1,263 @@
+---
+title: "SQL_queries"
+author: "Craig Gin"
+date: "2023-05-11"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Load libraries
+```{r}
+library("dplyr")
+library("RMySQL")
+library("tibble")
+```
+
+## Connect to MySQL database
+```{r}
+gutMB <- dbConnect(MySQL(), 
+                   username='crgin',
+                   password='insecure',
+                   dbname='gutMB')
+```
+
+## Check things out
+
+See what tables are in the database
+```{r}
+dbGetQuery(gutMB, "SHOW TABLES;")
+```
+
+Show the columns in the table called meta_data
+```{r}
+dbGetQuery(gutMB, "DESCRIBE meta_data;")
+```
+
+## Read in table from database
+
+Use SQL syntax - result is a data frame
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM meta_data;")
+```
+
+Use dplyr - result is not a data frame
+```{r}
+tbl(gutMB, "meta_data")
+```
+
+Get SQL syntax from dplyr syntax
+```{r}
+show_query(tbl(gutMB, "meta_data"))
+```
+
+
+## Use head() and see that it is the same as LIMIT 6
+```{r}
+head(tbl(gutMB, "meta_data"))
+```
+
+```{r}
+show_query(head(tbl(gutMB, "meta_data")))
+```
+
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM meta_data LIMIT 6")
+```
+
+## Do selecting and filtering with dplyr
+
+This is not a good method because we are first storing the entire meta_data table as a data frame
+```{r}
+meta_data <- dbGetQuery(gutMB, "SELECT * FROM meta_data;")
+
+meta_data %>% 
+  filter(study_condition=="CRC" & age < 70) %>% 
+  select(sample_id, study_name, body_site, study_condition, age) 
+```
+
+This is better because dplyr will filter and select before reading in the data
+```{r}
+tbl(gutMB, "meta_data") %>% 
+  filter(study_condition=="CRC" & age < 70) %>% 
+  select(sample_id, study_name, body_site, study_condition, age) 
+```
+
+If you are good with dplyr, you can use dplyr functions to select, filter, etc. and then get the corresponding SQL query.
+```{r}
+show_query(tbl(gutMB, "meta_data") %>% 
+  filter(study_condition=="CRC" & age < 70) %>% 
+  select(sample_id, study_name, body_site, study_condition, age))
+```
+
+We can do the same query with SQL.
+```{r}
+dbGetQuery(gutMB, "SELECT subject_id, study_name, body_site, study_condition, age 
+                   FROM meta_data 
+                   WHERE age < 70 AND study_condition = 'CRC';")
+```
+
+We will continue on using SQL commands instead of dplyr commands.
+
+## Look at abundance_table
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM abundance_table")
+```
+
+## Look at tax_table
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM tax_table")
+```
+
+## Order tax_table by species
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM tax_table ORDER BY SPECIES")
+```
+
+## Get abundances for CRC patients
+
+First, we see the command to filter the meta_data to get only CRC patients
+```{r}
+dbGetQuery(gutMB, "SELECT * 
+                   FROM meta_data
+                   WHERE study_condition = 'CRC'")
+```
+
+Then, we see the command to join meta_data and abundance_table based on the shared sample_id column
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM meta_data 
+                   INNER JOIN abundance_table 
+                   ON meta_data.sample_id = abundance_table.sample_id")
+```
+
+We can combine the join and filtering steps above to get species abundances for CRC patients
+```{r}
+dbGetQuery(gutMB, "SELECT * FROM meta_data 
+                   INNER JOIN abundance_table 
+                   ON meta_data.sample_id = abundance_table.sample_id
+                   WHERE study_condition = 'CRC'")
+```
+
+Note that the query above returns a data frame that has both species abundances and the meta data. If we really only want the abundances (and the meta data is just being used to filter) the better option is to use a subquery. The inner query finds all the sample_id's in meta_data where the study_condition is 'CRC' and the outer query gets those rows from abundance_table.
+```{r}
+dbGetQuery(gutMB, "SELECT *
+                   FROM abundance_table
+                   WHERE sample_id IN 
+                     (SELECT sample_id
+                      FROM meta_data 
+                      WHERE study_condition = 'CRC')")
+```
+
+## Grouping and summary/arithmetic functions
+
+We can use GROUP BY to see the possible values in study_condition
+```{r}
+dbGetQuery(gutMB, 
+           "SELECT study_condition
+           FROM meta_data 
+           GROUP BY study_condition")
+```
+
+We can also get a count for each group
+```{r}
+dbGetQuery(gutMB,
+           "SELECT COUNT(study_condition)
+            FROM meta_data
+            GROUP BY study_condition")
+```
+
+For numerical values, you can calculate the average of a column
+```{r}
+dbGetQuery(gutMB,
+           "SELECT AVG(age)
+            FROM meta_data")
+```
+
+And averages can be calculated by group
+```{r}
+dbGetQuery(gutMB,
+           "SELECT AVG(age)
+            FROM meta_data
+            GROUP BY study_condition")
+```
+
+Now we calculate the average abundance of Bifidobacterium longum
+```{r}
+dbGetQuery(gutMB,
+           "SELECT AVG(Bifidobacterium_longum)
+            FROM abundance_table")
+```
+
+Use GROUP BY to see the genera present in the data
+```{r}
+dbGetQuery(gutMB, 
+           "SELECT genus
+            FROM tax_table
+            GROUP BY genus")
+```
+
+See which species are present in the Genus Streptococcus
+```{r}
+dbGetQuery(gutMB, 
+           "SELECT species
+            FROM tax_table
+            WHERE genus = 'Streptococcus'")
+```
+
+## Make a transposed abundance table and write to database
+
+We would like to combine abundance_table with tax_table to be able get abundances grouped by higher levels of taxonomy than species. In order to do this, it will be much easier to work with the transpose of abundance_table (where rows are species and columns are samples). We will do this process in R and then save the resulting data frame as a new table in the database.
+
+First, read in the abundance table.
+```{r}
+abundance_table <- dbGetQuery(gutMB, 
+                              "SELECT *
+                               FROM abundance_table")
+```
+
+Change the sample_id column to rownames, transpose, and then change the rownames (now species names) to a column called species.
+```{r}
+abundance_table <- column_to_rownames(abundance_table, "sample_id")
+abundance_table_t <- as.data.frame(t(abundance_table))
+abundance_table_t <- rownames_to_column(abundance_table_t, "species")
+```
+
+Write the resulting data frame to a table called abundance_table_transpose
+```{r}
+dbWriteTable(gutMB, "abundance_table_transpose", abundance_table_t, overwrite=TRUE, row.names=FALSE)
+```
+
+We can check to make sure that the new table is in the database
+```{r}
+dbGetQuery(gutMB, "SHOW TABLES;")
+```
+
+Now we can use a subquery to get the species abundances for all species in the genus Streptococcus
+```{r}
+dbGetQuery(gutMB, "SELECT *
+                   FROM abundance_table_transpose
+                   WHERE species IN 
+                     (SELECT species
+                      FROM tax_table 
+                      WHERE genus = 'Streptococcus')")
+```
+
+For the sample with sample_id SID31004, we can calculate the total abundance of Streptococcus with the SUM function
+```{r}
+dbGetQuery(gutMB, "SELECT SUM(SID31004) 
+                   FROM abundance_table_transpose
+                   WHERE species IN 
+                     (SELECT species
+                      FROM tax_table 
+                      WHERE genus = 'Streptococcus')")
+```
+
+## Disconnect
+```{r}
+dbDisconnect(gutMB)
+```
+
